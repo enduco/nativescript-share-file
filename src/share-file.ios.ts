@@ -1,56 +1,85 @@
+import { ShareOptions } from "nativescript-akylas-share-file";
+import * as app from "@nativescript/core/application";
 
+// we need to store both the controller and the delegate.
+// UIDocumentInteractionController is not retained by iOS
+// the delegate is not retained by the controller
+let storedData: {
+    [k: number]: {
+        controller: UIDocumentInteractionController;
+        delegate: UIDocumentInteractionControllerDelegateImpl;
+    };
+} = {};
 
 export class ShareFile {
-
-    static getter<T>(_this2: any, property: T | { (): T }): T {
-        if (typeof property === "function") {
-            return (<{ (): T }>property).call(_this2);
-        } else {
-            return <T>property;
-        }
-    }
-
-    private controller: UIDocumentInteractionController;
-
-    open(args: any): boolean {
-        if (args.path) {
+    myId = Date.now();
+    private resolve: Function;
+    open(args: ShareOptions) {
+        return new Promise((resolve, reject) => {
+            if (!args.path) {
+                return reject(new Error("missing_arg_path"));
+            }
             try {
                 const appPath = this.getCurrentAppPath();
                 const path = args.path.replace("~", appPath);
-
-                this.controller = UIDocumentInteractionController.interactionControllerWithURL(NSURL.fileURLWithPath(path));
-                this.controller.delegate = new UIDocumentInteractionControllerDelegateImpl2();
-
+                const url = NSURL.fileURLWithPath(path);
+                const animated = args.animated !== false;
+                const controller = UIDocumentInteractionController.interactionControllerWithURL(
+                    url
+                );
+                controller.UTI = args?.type || "public.data, public.content";
+                controller.name = args.title;
+                const presentingController = app.ios.rootController;
+                const delegate = UIDocumentInteractionControllerDelegateImpl.new().initWithOwnerController(
+                    this,
+                    presentingController
+                );
+                controller.delegate = delegate;
                 let rect;
                 if (args.rect) {
-                    rect = CGRectMake(args.rect.x ? args.rect.x : 0, args.rect.y ? args.rect.y : 0, args.rect.width ? args.rect.width : 0, args.rect.height ? args.rect.height : 0);
+                    rect = CGRectMake(
+                        args.rect.x ? args.rect.x : 0,
+                        args.rect.y ? args.rect.y : 0,
+                        args.rect.width ? args.rect.width : 0,
+                        args.rect.height ? args.rect.height : 0
+                    );
                 } else {
                     rect = CGRectMake(0, 0, 0, 0);
                 }
-
-                if (args.options) {
-                    return this.controller.presentOptionsMenuFromRectInViewAnimated(
+                let result = false;
+                if (!!args.options) {
+                    result = controller.presentOptionsMenuFromRectInViewAnimated(
                         rect,
-                        this.controller.delegate.documentInteractionControllerViewForPreview(this.controller),
-                        args.animated ? true : false
+                        presentingController.view,
+                        animated
                     );
                 } else {
-                    return this.controller.presentOpenInMenuFromRectInViewAnimated(
+                    result = controller.presentOpenInMenuFromRectInViewAnimated(
                         rect,
-                        this.controller.delegate.documentInteractionControllerViewForPreview(this.controller),
-                        args.animated ? true : false
+                        presentingController.view,
+                        animated
                     );
                 }
-
-
+                if (!result) {
+                    return reject(new Error("failed_opening"));
+                }
+                storedData[this.myId] = {
+                    controller,
+                    delegate,
+                };
+                this.resolve = resolve;
+            } catch (e) {
+                return reject(e);
             }
-            catch (e) {
-                console.log("ShareFile: Open file failed");
-            }
-        } else {
-            console.log('ShareFile: Please add a file path');
+        }).finally(() => {
+            delete storedData[this.myId];
+        });
+    }
+    dismissed() {
+        if (this.resolve) {
+            this.resolve();
+            this.resolve = null;
         }
-        return false;
     }
 
     private getCurrentAppPath(): string {
@@ -67,21 +96,72 @@ export class ShareFile {
     }
 }
 
-class UIDocumentInteractionControllerDelegateImpl2 extends NSObject implements UIDocumentInteractionControllerDelegate {
+class UIDocumentInteractionControllerDelegateImpl extends NSObject
+    implements UIDocumentInteractionControllerDelegate {
     public static ObjCProtocols = [UIDocumentInteractionControllerDelegate];
+    controller: UIViewController;
+    private _owner: ShareFile;
 
-    public getViewController(): UIViewController {
-        const app = ShareFile.getter(UIApplication, UIApplication.sharedApplication);
-        return app.keyWindow.rootViewController;
+    static new(): UIDocumentInteractionControllerDelegateImpl {
+        return super.new() as UIDocumentInteractionControllerDelegateImpl;
+    }
+    public initWithOwnerController(
+        owner: ShareFile,
+        controller: UIViewController
+    ) {
+        this._owner = owner;
+        this.controller = controller;
+        return this;
     }
 
-    public documentInteractionControllerViewControllerForPreview(controller: UIDocumentInteractionController) {
-        return this.getViewController();
+    documentInteractionControllerWillBeginSendingToApplication(
+        controller: UIDocumentInteractionController,
+        app: string
+    ): void {
+        // console.log(
+        //     "documentInteractionControllerWillBeginSendingToApplication",
+        //     app
+        // );
+        const owner = this._owner;
+        if (owner) {
+            owner.dismissed();
+        }
     }
 
-    public documentInteractionControllerViewForPreview(controller: UIDocumentInteractionController) {
-        return this.getViewController().view;
+    documentInteractionControllerDidDismissOpenInMenu(
+        controller: UIDocumentInteractionController
+    ): void {
+        // console.log("documentInteractionControllerDidDismissOpenInMenu");
+        const owner = this._owner;
+        if (owner) {
+            owner.dismissed();
+        }
     }
 
+    documentInteractionControllerDidDismissOptionsMenu(
+        controller: UIDocumentInteractionController
+    ): void {
+        // console.log("documentInteractionControllerDidDismissOptionsMenu");
+        const owner = this._owner;
+        if (owner) {
+            owner.dismissed();
+        }
+    }
+
+    public documentInteractionControllerViewControllerForPreview(
+        controller: UIDocumentInteractionController
+    ) {
+        return this.controller;
+    }
+
+    public documentInteractionControllerViewForPreview(
+        controller: UIDocumentInteractionController
+    ) {
+        return this.controller.view;
+    }
+    public documentInteractionControllerRectForPreview(
+        controller: UIDocumentInteractionController
+    ) {
+        return this.controller.view.bounds;
+    }
 }
-
